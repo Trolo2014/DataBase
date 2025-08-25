@@ -1,1 +1,1 @@
-1.6.9|https://cdn.discordapp.com/attachments/1371603463762608198/1408550593236303912/PhantomScope_Extension.rar?ex=68aa2677&is=68a8d4f7&hm=a8b0499a2a76c705401f6a8d09a097058ee4e1845b57e185da149923b2b2fb45&
+1.7.0|https://cdn.discordapp.com/attachments/1371603463762608198/1409517902817792150/PhantomScope_Extension.rar?ex=68adab57&is=68ac59d7&hm=cf54e324c229ec6868142635fd1fc7a0ffb97984d1eaa3929c6c9b77f5e39249&
