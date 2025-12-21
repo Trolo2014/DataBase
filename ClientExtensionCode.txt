@@ -1,0 +1,1390 @@
+(function () {
+    'use strict';
+
+    function runAfterSearchUICountLoaded(callback) {
+        const interval = setInterval(() => {
+            if (typeof window.__SEARCH_UI_COUNT__ === "number" && window.__SEARCH_UI_COUNT__ > 0) {
+                clearInterval(interval);
+                callback(window.__SEARCH_UI_COUNT__);
+            }
+        }, 100);
+    }
+
+    runAfterSearchUICountLoaded((count) => {
+        for (let i = 1; i <= count; i++) {
+            
+            (function () {
+                'use strict';
+                const MAIN_PLACE_ID = '8737602449';
+                const placeMatch = location.pathname.match(/\/games\/(\d+)/);
+                const placeId = placeMatch ? placeMatch[1] : null;
+                const shownResults = new Set();
+                const seen = new Set();
+                if (!placeId) return;
+
+                async function getUserId(username) {
+                    const res = await fetch(`https://www.roblox.com/users/profile?username=${username}`);
+                    if (!res.ok) throw new Error('User not found');
+                    return res.url.match(/\d+/)[0];
+                }
+
+                async function getThumb(userId) {
+                    const resp = await fetch(
+                        `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&format=Png&size=150x150`
+                    );
+                    if (!resp.ok) throw new Error('Thumbnail fetch failed');
+                    const data = await resp.json();
+                    return data.data[0].imageUrl;
+                }
+
+                function formatTimeLeft(totalSec) {
+                    const days = Math.floor(totalSec / 86400);
+                    let rem = totalSec % 86400;
+                    const hours = Math.floor(rem / 3600);
+                    rem %= 3600;
+                    const minutes = Math.floor(rem / 60);
+                    const seconds = rem % 60;
+                    return `${days}D ${hours}H ${minutes}M ${seconds}S`;
+                }
+
+                function ensureDiscordID() {
+                    return new Promise((resolve) => {
+                        if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+                            return resolve(false);
+                        }
+                        chrome.runtime.sendMessage({ type: "GET_DISCORDID" }, (res) => {
+                            if (res && res.ok && res.DiscordID) {
+                                resolve(res.DiscordID);
+                            } else {
+                                resolve(false);
+                            }
+                        });
+                    });
+                }
+
+                function showToast(msg, opts = {}) {
+                    try {
+                        const id = 'phantom-toast';
+                        let t = document.getElementById(id);
+                        if (!t) {
+                            t = document.createElement('div');
+                            t.id = id;
+                            t.style.position = 'fixed';
+                            t.style.right = '18px';
+                            t.style.bottom = '18px';
+                            t.style.zIndex = 999999;
+                            t.style.maxWidth = '360px';
+                            t.style.fontFamily = 'Arial, sans-serif';
+                            document.body.appendChild(t);
+                        }
+                        const el = document.createElement('div');
+                        el.style.background = opts.background || '#222';
+                        el.style.color = opts.color || '#fff';
+                        el.style.padding = '10px 12px';
+                        el.style.borderRadius = '8px';
+                        el.style.boxShadow = '0 6px 18px rgba(0,0,0,0.4)';
+                        el.style.marginTop = '8px';
+                        el.style.fontSize = '13px';
+                        el.style.opacity = '0';
+                        el.style.transition = 'opacity 180ms ease';
+                        el.innerText = msg;
+                        t.appendChild(el);
+                        requestAnimationFrame(() => { el.style.opacity = '1'; });
+                        setTimeout(() => {
+                            el.style.opacity = '0';
+                            setTimeout(() => { try { el.remove(); } catch (e) { } }, 220);
+                        }, opts.duration || 3200);
+                    } catch (e) { try { alert(msg); } catch (e2) { } }
+                }
+
+                async function checkLiveStatus() {
+                    return new Promise((resolve) => {
+                        if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+                            resolve({ level: 'yellow', message: 'PhantomScope Server Is Down' });
+                            return;
+                        }
+                        chrome.runtime.sendMessage({ type: 'FETCH_JSON', url: 'https://phantomscope.onrender.com/api/livechannelstatus' }, (resp) => {
+                            if (!resp || resp.success === false) {
+                                resolve({ level: 'yellow', message: 'PhantomScope Server Is Down Or Ur Network Is Ass' });
+                                return;
+                            }
+
+                            const statusCode = resp.status;
+                            const okFlag = typeof resp.ok !== 'undefined' ? resp.ok : true;
+                            const data = resp.data || resp;
+
+                            if (statusCode === 403) {
+                                resolve({ level: 'yellow', message: 'PhantomScope Whitelist Error' });
+                            } else if (statusCode === 500 || statusCode === 503) {
+                                resolve({ level: 'yellow', message: 'PhantomScope Server Is Restarting' });
+                            } else if (!okFlag) {
+                                resolve({ level: 'yellow', message: 'PhantomScope Server Is Down Or Ur Network Is Ass' });
+                            } else {
+                                try {
+                                    if (data && typeof data.count === 'number' && data.count > 0) {
+                                        resolve({ level: 'green', message: 'Live Is Up' });
+                                    } else {
+                                        resolve({ level: 'red', message: "Ping Shawn Only When #live-board Is Down | If Not Will Self Fix In Couple Minutes" });
+                                    }
+                                } catch (e) {
+                                    resolve({ level: 'yellow', message: 'PhantomScope Server Is Down Or Ur Network Is Ass' });
+                                }
+                            }
+                        });
+                    });
+                }
+
+                function renderStatusToElement(statusObj) {
+                    try {
+                        const el = document.getElementById('phantom-live-status');
+                        if (!el) return;
+                        let emoji = '🔴';
+                        if (statusObj.level === 'green') emoji = '🟢';
+                        else if (statusObj.level === 'yellow') emoji = '🟡';
+                        el.textContent = `Status: ${emoji} ${statusObj.message}`;
+                        el.style.color = statusObj.level === 'green' ? '#66ff66' 
+                                        : (statusObj.level === 'yellow' ? '#ffd54f' : '#ff6b6b');
+                    } catch (e) { }
+                }
+
+                async function tryEnableLiveToggle(triggeringCheckboxEl) {
+                    const st = await checkLiveStatus();
+                    renderStatusToElement(st);
+                    if (st.level !== 'green') {
+                        if (triggeringCheckboxEl) triggeringCheckboxEl.checked = false;
+                        showToast("Ping Shawn Only When #live-board Is Down | If Not Will Self Fix In Couple Minutes", { background: '#b00020', color: '#fff' });
+                        return false;
+                    }
+                    return true;
+                }
+
+
+                async function fetchExpiryAndStartCountdown() {
+                    const discordID = await ensureDiscordID(); 
+                    const instances = i ?? 1;
+					
+                    const setExpiryText = (txt) => {
+                        try {
+                            const el = document.getElementById('expiry-title-' + instances);
+                            if (el) el.textContent = txt;
+                        } catch (e) {}
+                    };
+
+                    if (!discordID) {
+                        setExpiryText('(Need Fetch DiscordID)');
+                        setTimeout(() => {
+                            window.location.href = 'https://phantomscope.onrender.com/api/resethwid';
+                        }, 2000);
+                        return;
+                    }
+
+                    let subtimer = 0;
+                    let countdownIntervalId = null;
+                    let pingIntervalId = null;
+                    
+                    window.__Primary = window.__Primary || {}; 
+                    window.__Primary.Redirecting      = window.__Primary.Redirecting      || false;
+                    window.__Primary.ReconnectRunning = window.__Primary.ReconnectRunning || false;
+                    window.__Primary.WsFailed         = window.__Primary.WsFailed         || 0;
+                    window.__Primary.WsMonitorRunning = window.__Primary.WsMonitorRunning || false;
+                    window.__Primary.ws               = window.__Primary.ws               || null;
+                    window.__Primary.key              = window.__Primary.key              || null;
+                    window.__Primary.AntySpam         = window.__Primary.AntySpam         || null;
+
+                    if (instances === 1) {
+                        async function WebSocketConnectionTracker() {
+                            if (!window.__Primary.WsMonitorRunning) {
+                                window.__Primary.WsMonitorRunning = true;
+
+                                window.__Primary.WsMonitorInterval = setInterval(async () => {
+                                    try {
+                                        if (window.__Primary.WsFailed > 2 && !window.__Primary.Redirecting && window.__Primary.AntySpam === null) {
+                                            window.__Primary.Redirecting = true;
+
+                                            let discordID = await new Promise(resolve => {
+                                                chrome.runtime.sendMessage({ type: "GET_DISCORDID" }, resp => resolve(resp && resp.ok && resp.DiscordID || null));
+                                            });
+
+                                            if (discordID) {
+                                                await new Promise(resolve => {
+                                                    chrome.runtime.sendMessage({ type: "PURGE_DISCORDID" }, () => resolve());
+                                                });
+
+                                                while (discordID) {
+                                                    discordID = await new Promise(resolve => {
+                                                        chrome.runtime.sendMessage({ type: "GET_DISCORDID" }, resp => resolve(resp && resp.ok && resp.DiscordID || null));
+                                                    });
+                                                    if (discordID) await new Promise(r => setTimeout(r, 100));
+                                                }
+
+                                                window.open('https://phantomscope.onrender.com/api/resethwid', '_blank');
+
+                                                while (!discordID) {
+                                                    discordID = await new Promise(resolve => {
+                                                        chrome.runtime.sendMessage({ type: "GET_DISCORDID" }, resp => resolve(resp && resp.ok && resp.DiscordID || null));
+                                                    });
+                                                    if (!discordID) await new Promise(r => setTimeout(r, 100));
+                                                }
+                                            }
+                                            window.__Primary.AntySpam = null
+                                            window.__Primary.Redirecting = false;
+                                            window.__Primary.WsFailed = 0;
+                                        }
+                                    } catch (e) {}
+                                }, 100);
+                            }
+                        }
+                        WebSocketConnectionTracker();
+                    }
+
+                    const ws = new WebSocket("wss://phantomscope.onrender.com/api/subscriptionstatus");
+                    if (instances === 1 && ws.readyState !== 1) window.__Primary.WsFailed += 1;
+                    if (instances === 1) window.__Primary.ws = ws;
+
+                    ws.onopen = () => {
+                        try { ws.send(JSON.stringify({ DiscordID: discordID, Instances: instances })); } catch (e) {}
+
+                        pingIntervalId = setInterval(() => {
+                            try {
+                                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "Ping" }));
+                            } catch (e) {}
+                        }, 1000);
+                    };
+
+                    ws.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+
+                            if (data.status) return;
+                            
+                            if (data.sharing === true) {
+                                setExpiryText(`You Already Have 1 Pls Donate Game Tab Open Closing This One...`);
+                                setTimeout(() => { window.location.href = 'https://www.roblox.com/home'; }, 4500);
+                                return;
+                            }
+                            
+                            if (data.expiry == null) return;
+                            if (instances === 1 && data.ws_key) window.__Primary.key = data.ws_key;
+                            if (data.ip) window.__Primary.AntySpam = data.ip
+
+                            subtimer = data.expiry - Math.floor(Date.now() / 1000);
+                            if (countdownIntervalId) clearInterval(countdownIntervalId);
+                            setExpiryText(`Expires: ${formatTimeLeft(subtimer)}`);
+
+                            countdownIntervalId = setInterval(() => {
+                                try {
+                                    if (instances === 1 && window.__Primary.Redirecting) return;
+                                    subtimer -= 1;
+                                    if (subtimer <= 0) {
+                                        clearInterval(countdownIntervalId);
+                                        countdownIntervalId = null;
+                                        setExpiryText('Expired');
+                                        window.location.href = 'https://discord.com/channels/1365037528088051742/1391858361548406875/1391860683322294343';
+                                    } else {
+                                        setExpiryText(`Expires: ${formatTimeLeft(subtimer)}`);
+                                    }
+                                } catch(e){}
+                            }, 1000);
+
+                        } catch(e){}
+                    };
+
+                    ws.onclose = () => { 
+                        try {
+                            if (instances === 1) {
+                                if (pingIntervalId) { clearInterval(pingIntervalId); pingIntervalId = null; }
+                                if (countdownIntervalId) { clearInterval(countdownIntervalId); countdownIntervalId = null; }
+                                if (window.__Primary.ReconnectRunning) return;
+                                setExpiryText(`Connecting... Attempts: ${window.__Primary.WsFailed}/3`);
+                                window.__Primary.ReconnectRunning = true;
+                                window.__Primary.key = null;
+                                window.__Primary.AntySpam = null
+
+                                const waitForRedirect = async () => {
+                                    while (window.__Primary.Redirecting) {
+                                        await new Promise(r => setTimeout(r, 250));
+                                    }
+                                    window.__Primary.ReconnectRunning = false;
+                                    fetchExpiryAndStartCountdown();
+                                };
+                                waitForRedirect();
+                            }
+
+                            if (subtimer == 0 && instances > 1) {
+                                const waitForPrimaryKey = setInterval(() => {
+                                    if (window.__Primary?.key != null) {
+                                        clearInterval(waitForPrimaryKey);
+                                        fetchExpiryAndStartCountdown();
+                                    }
+                                }, 250);
+                            }
+
+                        } catch(e){}
+                    };
+                }
+
+                function disableUIExceptAuto() {
+                    input.disabled = searchBtn.disabled = searchJoinBtn.disabled = true;
+                    autoCheckbox.disabled = false;
+                }
+                function enableUI() {
+                    input.disabled = false;
+                    const empty = input.value.trim() === '';
+                    searchBtn.disabled = searchJoinBtn.disabled = empty;
+                }
+
+                function createLivePullPanel() {
+                    if (document.getElementById('phantom-live-pull-panel')) return;
+                    const parent = document.getElementById('running-game-instances-container');
+                    if (!parent) return;
+
+                    const panel = document.createElement('div');
+                    panel.id = 'phantom-live-pull-panel';
+                    panel.className = 'section';
+
+                    panel.style.marginBottom = '8px';
+                    panel.style.background = 'linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.12))';
+                    panel.style.padding = '12px';
+                    panel.style.borderRadius = '10px';
+                    panel.style.color = '#eaeaea';
+                    panel.style.border = '1px solid rgba(255,255,255,0.04)';
+                    panel.style.boxShadow = '0 8px 24px rgba(0,0,0,0.6)';
+
+                    const hdr = document.createElement('div');
+                    hdr.style.display = 'flex';
+                    hdr.style.alignItems = 'center';
+                    hdr.style.justifyContent = 'space-between';
+                    hdr.style.marginBottom = '8px';
+
+                    const leftHdr = document.createElement('div');
+                    leftHdr.style.display = 'flex';
+                    leftHdr.style.alignItems = 'center';
+                    leftHdr.style.gap = '10px';
+
+                    const hTitle = document.createElement('h2');
+                    hTitle.style.margin = '0';
+                    hTitle.style.fontSize = '1.05em';
+                    hTitle.style.color = '#fff';
+                    hTitle.textContent = 'Live Pull';
+
+                    const hStatus = document.createElement('span');
+                    hStatus.id = 'phantom-live-status';
+                    hStatus.style.fontSize = '0.95em';
+                    hStatus.style.color = '#66ff66';
+                    hStatus.textContent = 'Status: 🔴';
+
+                    leftHdr.appendChild(hTitle);
+                    leftHdr.appendChild(hStatus);
+
+                    const rightHdr = document.createElement('div');
+                    rightHdr.style.display = 'flex';
+                    rightHdr.style.alignItems = 'center';
+                    rightHdr.style.gap = '12px';
+
+                    const toggleWrap = document.createElement('label');
+                    toggleWrap.style.display = 'inline-flex';
+                    toggleWrap.style.alignItems = 'center';
+                    toggleWrap.style.gap = '8px';
+                    toggleWrap.style.cursor = 'pointer';
+                    toggleWrap.title = 'Toggle Live Pull';
+
+                    const toggle = document.createElement('input');
+                    toggle.type = 'checkbox';
+                    toggle.id = 'phantom-live-toggle';
+                    toggle.style.display = 'none';
+
+                    const faux = document.createElement('div');
+                    faux.style.width = '52px';
+                    faux.style.height = '28px';
+                    faux.style.borderRadius = '999px';
+                    faux.style.background = 'linear-gradient(180deg,#222,#0f0f10)';
+                    faux.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.02)';
+                    faux.style.display = 'flex';
+                    faux.style.alignItems = 'center';
+                    faux.style.padding = '4px';
+                    faux.style.position = 'relative';
+                    faux.style.transition = 'all 180ms ease';
+
+                    const knob = document.createElement('div');
+                    knob.style.width = '20px';
+                    knob.style.height = '20px';
+                    knob.style.borderRadius = '50%';
+                    knob.style.background = '#cfd8dc';
+                    knob.style.boxShadow = '0 6px 18px rgba(0,0,0,0.6)';
+                    knob.style.transition = 'transform 180ms ease, background 180ms';
+                    knob.style.transform = 'translateX(0px)';
+
+                    const toggleText = document.createElement('div');
+                    toggleText.textContent = 'Verifying Auth';
+                    toggleText.style.fontSize = '13px';
+                    toggleText.style.color = '#fff';
+                    toggleText.style.fontWeight = '700';
+
+                    faux.appendChild(knob);
+                    toggleWrap.appendChild(toggle);
+                    toggleWrap.appendChild(faux);
+                    toggleWrap.appendChild(toggleText);
+
+                    toggleWrap.style.pointerEvents = 'none';
+                    const waitForWS = setInterval(() => {
+                        if (window.__Primary && window.__Primary.key !== null) {
+                            clearInterval(waitForWS);
+                            toggleWrap.style.pointerEvents = 'auto';
+                            toggleText.textContent = 'Off';
+                        }
+                    }, 100);
+
+                    function updateFaux(state) {
+                        if (state) {
+                            faux.style.background = 'linear-gradient(180deg,#1a1f21,#071011)';
+                            knob.style.transform = 'translateX(24px)';
+                            knob.style.background = '#66ff66';
+                            toggleText.textContent = 'On';
+                        } else {
+                            faux.style.background = 'linear-gradient(180deg,#222,#0f0f10)';
+                            knob.style.transform = 'translateX(0px)';
+                            knob.style.background = '#cfd8dc';
+                            toggleText.textContent = 'Off';
+                        }
+                    }
+
+                    toggle.addEventListener('change', async () => {
+                        updateFaux(toggle.checked);
+                        if (toggle.checked) {
+                            const ok = await tryEnableLiveToggle(toggle);
+                            if (!ok) {
+                                toggle.checked = false;
+                                updateFaux(false);
+                                return;
+                            } else {
+                                connectLiveWS();
+                            }
+                        } else {
+                            disconnectLiveWS();
+                        }
+                    });
+
+                    rightHdr.appendChild(toggleWrap);
+                    hdr.appendChild(leftHdr);
+                    hdr.appendChild(rightHdr);
+                    panel.appendChild(hdr);
+
+                    const controlsRow = document.createElement('div');
+                    controlsRow.style.display = 'flex';
+                    controlsRow.style.alignItems = 'center';
+                    controlsRow.style.gap = '8px';
+                    controlsRow.style.marginBottom = '8px';
+
+                    const hideBtn = document.createElement('button');
+                    hideBtn.type = 'button';
+                    hideBtn.className = 'btn-control-xs btn-min-width';
+                    hideBtn.textContent = 'Hide';
+                    hideBtn.style.padding = '6px 10px';
+                    hideBtn.style.background = '#222';
+                    hideBtn.style.color = '#fff';
+                    hideBtn.style.border = 'none';
+                    hideBtn.style.borderRadius = '6px';
+                    controlsRow.appendChild(hideBtn);
+
+                    panel.appendChild(controlsRow);
+
+                    const liveList = document.createElement('ul');
+                    liveList.id = 'phantom-live-list';
+                    liveList.style.display = 'flex';
+                    liveList.style.gap = '12px';
+                    liveList.style.flexWrap = 'wrap';
+                    liveList.style.padding = '12px';
+                    liveList.style.margin = '0';
+                    liveList.style.listStyle = 'none';
+                    liveList.style.maxHeight = '520px';
+                    liveList.style.overflow = 'auto';
+                    liveList.style.border = '1px solid rgba(255,255,255,0.04)';
+                    liveList.style.borderRadius = '8px';
+                    liveList.style.background = '#0f0f10';
+                    liveList.style.color = '#eaeaea';
+
+                    panel.appendChild(liveList);
+                    parent.insertBefore(panel, parent.firstChild);
+
+                    let visible = true;
+                    hideBtn.addEventListener('click', () => {
+                        visible = !visible;
+                        liveList.style.display = visible ? 'flex' : 'none';
+                        hideBtn.textContent = visible ? 'Hide' : 'Show';
+                    });
+
+                    return {
+                        panel,
+                        panelToggle: toggle,
+                        liveList,
+                        hStatus,
+                        panelToggleText: toggleText
+                    };
+                }
+
+                if (!window.__LIVE_PULL_RUNNING__) {
+                    window.__LIVE_PULL_RUNNING__ = true;
+                    createLivePullPanel();
+                    setTimeout(() => {
+                        const header = document.querySelector("#rbx-public-running-games > div.container-header > div.server-list-container-header");
+                        if (header) addHeaderToggleToServerList();
+                        else {
+                            const waitForHeader = setInterval(() => {
+                                const h = document.querySelector("#rbx-public-running-games > div.container-header > div.server-list-container-header");
+                                if (h) {
+                                    clearInterval(waitForHeader);
+                                    addHeaderToggleToServerList();
+                                }
+                            }, 500);
+                        }
+                    }, 600);
+                }
+
+                const container = document.getElementById('running-game-instances-container');
+                if (!container) return;
+
+                const section = document.createElement('div');
+                section.classList.add('section');
+                section.style.marginBottom = '8px';
+
+                const uiStyle = document.createElement('style');
+                uiStyle.textContent = `
+                    /* PhantomScope - upgraded search ui */
+                    .phantom-search-card {
+                        background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(0,0,0,0.03));
+                        border-radius: 14px;
+                        padding: 16px;
+                        box-shadow: 0 18px 48px rgba(2,6,23,0.75);
+                        border: 1px solid rgba(255,255,255,0.03);
+                        display: block;
+                        overflow: hidden;
+                        font-family: Inter, Arial, sans-serif;
+                    }
+                    .phantom-search-title {
+                        display:flex;
+                        align-items:center;
+                        gap:12px;
+                        color: #f8fafb;
+                        margin: 0 0 10px 0;
+                        font-weight: 800;
+                        font-size: 16px;
+                        letter-spacing: 0.2px;
+                    }
+                    .phantom-search-row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+                    .phantom-avatar { width:66px;height:66px;border-radius:12px; border:2px solid rgba(255,255,255,0.04); object-fit:cover; display:block; background:linear-gradient(180deg,#061012,#081015); transition: transform 180ms, box-shadow 180ms; }
+                    .phantom-avatar.loaded { transform: translateY(-4px); box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
+                    .phantom-input {
+                        background: rgba(255,255,255,0.02);
+                        border: 1px solid rgba(255,255,255,0.03);
+                        padding: 12px 14px;
+                        border-radius: 12px;
+                        color: #ffffff;
+                        outline: none;
+                        min-width: 340px;
+                        transition: box-shadow 160ms ease, transform 120ms ease, border-color 120ms;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+                    .phantom-input::placeholder { color: #88a8aa; font-weight:500; }
+                    .phantom-input:focus { box-shadow: 0 28px 60px rgba(0,0,0,0.7); transform: translateY(-1px); border-color: rgba(255,255,255,0.06); }
+                    .phantom-btn {
+                        padding: 10px 14px;
+                        border-radius: 12px;
+                        border: none;
+                        cursor: pointer;
+                        font-weight: 800;
+                        transition: transform 150ms cubic-bezier(.2,.9,.2,1), box-shadow 150ms;
+                        min-width: 140px;
+                        display:inline-flex;
+                        align-items:center;
+                        justify-content:center;
+                        gap:10px;
+                        user-select:none;
+                        font-size:14px;
+                    }
+                    .phantom-btn:active { transform: translateY(1px); }
+                    .phantom-btn[disabled] { opacity: 0.6; cursor: not-allowed; transform:none; box-shadow:none; }
+                    .phantom-btn-primary {
+                        background: linear-gradient(180deg,#2c2f33,#18191b);
+                        color: #ffffff !important;
+                        box-shadow: 0 12px 36px rgba(3,8,20,0.7);
+                        border: 1px solid rgba(255,255,255,0.02);
+                    }
+                    .phantom-btn-primary:hover { transform: translateY(-2px); box-shadow: 0 26px 60px rgba(3,8,20,0.75); }
+                    .phantom-btn-icon {
+                        width:18px;height:18px;display:inline-block;opacity:0.95;
+                    }
+                    .phantom-small-muted { font-size:12px;color:#9fb6b8;margin-left:8px; font-weight:600; }
+                    .phantom-controls-col { display:flex; flex-direction:column; gap:8px; }
+                    .phantom-checkbox { width:16px;height:16px; accent-color: #88979a; }
+                    .phantom-status { font-size:13px;color:#dbeff0;margin-top:12px; white-space:pre-wrap; transition: opacity 180ms; }
+                    .phantom-compact-btn { padding:8px 10px; border-radius:8px; font-size:13px; background: rgba(255,255,255,0.02); color:#e6eef0; border:1px solid rgba(255,255,255,0.03); }
+                    .phantom-bottom-row { display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+                    @media (max-width: 880px) {
+                      .phantom-search-row { flex-direction: column; align-items:stretch; }
+                      .phantom-input { min-width: auto; width:100%; }
+                      .phantom-controls-col { flex-direction:row; gap:8px; }
+                      .phantom-btn { width:100%; justify-content:center; }
+                      .phantom-avatar { margin: 0 auto; }
+                    }
+                `;
+                section.appendChild(uiStyle);
+                section.classList.add('phantom-search-card');
+
+                const title = document.createElement('h2');
+                title.className = 'phantom-search-title';
+
+                const titleText = document.createTextNode('PhantomScope');
+                title.appendChild(titleText);
+
+                const expiryTitle = document.createElement('span');
+                expiryTitle.id = 'expiry-title-' + i;
+                expiryTitle.style.fontSize = '0.9em';
+                expiryTitle.style.color = '#FFD700';
+                expiryTitle.style.marginLeft = '8px';
+                expiryTitle.textContent = '(Loading Expiry…)';
+                title.appendChild(expiryTitle);
+
+                section.appendChild(title);
+
+                const row = document.createElement('div');
+                row.className = 'phantom-search-row';
+                section.appendChild(row);
+
+                const avatarContainer = document.createElement('div');
+                avatarContainer.style.display = 'flex';
+                avatarContainer.style.flexDirection = 'column';
+                avatarContainer.style.alignItems = 'center';
+                avatarContainer.style.flexShrink = '0';
+                row.appendChild(avatarContainer);
+
+                const avatarImg = document.createElement('img');
+                avatarImg.className = 'phantom-avatar';
+                avatarImg.style.display = 'none';
+                avatarContainer.appendChild(avatarImg);
+
+                const form = document.createElement('form');
+                form.style.display = 'flex';
+                form.style.alignItems = 'flex-start';
+                form.style.gap = '12px';
+                form.style.flexWrap = 'wrap';
+                row.appendChild(form);
+
+                form.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                });
+
+                const input = document.createElement('input');
+                input.classList.add('input-field', 'phantom-input');
+                input.placeholder = 'Username';
+                input.setAttribute('aria-label', 'Player username');
+                form.appendChild(input);
+
+                const btnsWrap = document.createElement('div');
+                btnsWrap.style.display = 'flex';
+                btnsWrap.style.flexDirection = 'column';
+                btnsWrap.style.gap = '8px';
+                form.appendChild(btnsWrap);
+
+                const topBtnRow = document.createElement('div');
+                topBtnRow.style.display = 'flex';
+                topBtnRow.style.gap = '8px';
+                btnsWrap.appendChild(topBtnRow);
+
+                const searchBtn = document.createElement('button');
+                searchBtn.type = 'button';
+                searchBtn.classList.add('phantom-btn', 'phantom-btn-primary');
+                searchBtn.style.color = '#ffffff';
+                searchBtn.style.fontWeight = '800';
+                searchBtn.innerText = 'Search';
+                searchBtn.disabled = true;
+                topBtnRow.appendChild(searchBtn);
+
+                const searchJoinBtn = document.createElement('button');
+                searchJoinBtn.type = 'button';
+                searchJoinBtn.classList.add('phantom-btn', 'phantom-btn-primary');
+                searchJoinBtn.style.color = '#ffffff';
+                searchJoinBtn.style.fontWeight = '800';
+                searchJoinBtn.innerText = 'Search & Join';
+                searchJoinBtn.disabled = true;
+                topBtnRow.appendChild(searchJoinBtn);
+
+                const checkboxContainer = document.createElement('div');
+                checkboxContainer.className = 'phantom-controls-col';
+                form.appendChild(checkboxContainer);
+
+                const autoLabel = document.createElement('label');
+                autoLabel.style.display = 'flex';
+                autoLabel.style.alignItems = 'center';
+                autoLabel.style.gap = '8px';
+                autoLabel.style.fontSize = '14px';
+                const autoCheckbox = document.createElement('input');
+                autoCheckbox.type = 'checkbox';
+                autoCheckbox.className = 'phantom-checkbox';
+                autoLabel.appendChild(autoCheckbox);
+                autoLabel.appendChild(document.createTextNode('Extended Search'));
+                checkboxContainer.appendChild(autoLabel);
+
+                const joinWithoutCloseLabel = document.createElement('label');
+                joinWithoutCloseLabel.style.display = 'flex';
+                joinWithoutCloseLabel.style.alignItems = 'center';
+                joinWithoutCloseLabel.style.gap = '8px';
+                joinWithoutCloseLabel.style.fontSize = '14px';
+                const joinWithoutCloseCheckbox = document.createElement('input');
+                joinWithoutCloseCheckbox.type = 'checkbox';
+                joinWithoutCloseCheckbox.className = 'phantom-checkbox';
+                joinWithoutCloseLabel.appendChild(joinWithoutCloseCheckbox);
+                joinWithoutCloseLabel.appendChild(document.createTextNode('Keep Roblox Open'));
+                checkboxContainer.appendChild(joinWithoutCloseLabel);
+
+                const bottomRow = document.createElement('div');
+                bottomRow.className = 'phantom-bottom-row';
+                section.appendChild(bottomRow);
+
+                const status = document.createElement('div');
+                status.className = 'phantom-status';
+                status.textContent = '';
+                bottomRow.appendChild(status);
+
+                const joinBtn = document.createElement('button');
+                joinBtn.type = 'button';
+                joinBtn.classList.add(
+                    'btn-control-xs',
+                    'rbx-game-server-join',
+                    'game-server-join-btn',
+                    'phantom-compact-btn'
+                );
+                joinBtn.innerText = 'Join';
+                joinBtn.style.display = 'none';
+                joinBtn.style.marginTop = '6px';
+                section.appendChild(joinBtn);
+
+                const inviteBtn = document.createElement('button');
+                inviteBtn.type = 'button';
+                inviteBtn.classList.add(
+                    'btn-control-xs',
+                    'rbx-game-server-join',
+                    'game-server-join-btn',
+                    'phantom-compact-btn'
+                );
+                inviteBtn.innerText = 'Invite';
+                inviteBtn.style.display = 'none';
+                inviteBtn.style.marginTop = '6px';
+                section.appendChild(inviteBtn);
+
+                const specialBtn = document.createElement('button');
+                specialBtn.type = 'button';
+                specialBtn.classList.add(
+                    'btn-control-xs',
+                    'rbx-game-server-join',
+                    'game-server-join-btn',
+                    'phantom-compact-btn'
+                );
+                specialBtn.innerText = 'Copy Teleport Code';
+                specialBtn.style.display = 'none';
+                specialBtn.style.marginTop = '6px';
+                section.appendChild(specialBtn);
+
+                input.readOnly = true; 
+                searchBtn.disabled = true;
+                searchJoinBtn.disabled = true;
+                input.placeholder = 'Verifying Auth…';
+
+                const waitForWS = setInterval(() => {
+                    if (window.__Primary && window.__Primary.key !== null) {
+                        clearInterval(waitForWS);
+                        input.readOnly = false; 
+                        searchBtn.disabled = false;
+                        searchJoinBtn.disabled = false;
+                        input.placeholder = 'Username';
+                    }
+                }, 100);
+
+                const livePanelExisting = document.getElementById('phantom-live-pull-panel');
+                if (livePanelExisting) {
+                    container.insertBefore(section, livePanelExisting.nextSibling);
+                } else {
+                    container.insertBefore(section, container.firstChild);
+                }
+
+                input.addEventListener('input', () => {
+                    const empty = input.value.trim() === '';
+                    searchBtn.disabled = searchJoinBtn.disabled = empty;
+                    if (empty) avatarImg.style.display = 'none';
+                });
+
+                let targetUserId = null;
+                let searchInProgress = false;
+
+                input.addEventListener('change', async () => {
+                    const name = input.value.trim();
+                    if (!name) return;
+                    try {
+                        const uid = await getUserId(name);
+                        targetUserId = uid;
+                        avatarImg.src = await getThumb(uid);
+                        avatarImg.style.display = '';
+                    } catch {
+                        targetUserId = null;
+                        avatarImg.style.display = 'none';
+                    }
+                });
+
+                function createSearchSocket(username, placeId) {
+                    return new Promise((resolve, reject) => {
+                        const waitForKey = setInterval(() => {
+                            if (window.__Primary && window.__Primary.key) {
+                                clearInterval(waitForKey);
+                                const ws = new WebSocket(
+                                    `wss://phantomscope.onrender.com/sniper?authkey=${encodeURIComponent(window.__Primary.key)}`
+                                );
+                                const startTime = Date.now();
+                                ws.addEventListener("open", () => {
+                                    ws.send(JSON.stringify({ username, placeId }));
+                                    resolve({ ws, startTime });
+                                });
+
+                                ws.addEventListener("error", err => {
+                                    reject(err);
+                                });
+                            }
+                        }, 50);
+                    });
+                }
+
+
+                async function wsDoSearch(autoJoin) {
+                    if (searchInProgress) return false;
+                    searchInProgress = true;
+                    disableUIExceptAuto();
+                    status.innerHTML = "🔗 Verifying Auth…";
+                    joinBtn.style.display = inviteBtn.style.display = specialBtn.style.display = "none";
+                    const username = input.value.trim();
+                    try {
+                        const { ws, startTime } = await createSearchSocket(username, placeId);
+                        return await new Promise(resolve => {
+                            ws.addEventListener("message", async ev => {
+                                let msg;
+                                try {
+                                    msg = JSON.parse(ev.data);
+                                } catch {
+                                    console.warn("Non-JSON frame:", ev.data);
+                                    return;
+                                }
+                                switch (msg.status) {
+                                    case "update":
+                                        status.innerHTML = msg.msg;
+                                        break;
+                                    case "done":
+                                        ws.close();
+                                        const secs = ((Date.now() - startTime) / 1000).toFixed(0);
+                                        if (msg.result === "found") {
+                                            const info = msg.data;
+                                            const foundPlaceStr = String(info.placeId);
+                                            const isFastMode = info.placename.includes("Fast Mode");
+                                            const isMain = (foundPlaceStr === MAIN_PLACE_ID);
+                                            [joinBtn, inviteBtn, specialBtn].forEach(btn => {
+                                                delete btn.dataset.profileUrl;
+                                                delete btn.dataset.server;
+                                                delete btn.dataset.placeid;
+                                                delete btn.dataset.placename;
+                                                delete btn.dataset.teleportCode;
+                                            });
+                                            if (isFastMode && !isMain) {
+                                                joinBtn.innerText = "Open Profile";
+                                                joinBtn.dataset.profileUrl =
+                                                    `https://www.roblox.com/users/${targetUserId}/profile?friendshipSourceType=PlayerSearch`;
+                                                joinBtn.style.display = "";
+                                                inviteBtn.innerText = "Invite (Profile)";
+                                                inviteBtn.dataset.teleportCode = joinBtn.dataset.profileUrl;
+                                                inviteBtn.style.display = "";
+                                                specialBtn.innerText = "Copy Teleport Code";
+                                                specialBtn.dataset.teleportCode =
+                                                    `game:GetService("TeleportService"):TeleportToPlaceInstance(${info.placeId}, "${info.serverId}", game.Players.LocalPlayer)`;
+                                                specialBtn.style.display = "";
+                                                if (autoJoin) {
+                                                    window.open(joinBtn.dataset.profileUrl, '_blank');
+                                                }
+                                            } else if (isMain) {
+                                                joinBtn.innerText = "Join";
+                                                joinBtn.dataset.server = info.serverId;
+                                                joinBtn.dataset.placeid = foundPlaceStr;
+                                                joinBtn.dataset.placename = info.placename;
+                                                joinBtn.style.display = "";
+                                                inviteBtn.innerText = "Invite";
+                                                inviteBtn.dataset.teleportCode =
+                                                    `https://fern.wtf/joiner?placeId=${foundPlaceStr}&gameInstanceId=${info.serverId}`;
+                                                inviteBtn.style.display = "";
+                                                if (autoJoin) {
+                                                    chrome.runtime.sendMessage({
+                                                        type: "join",
+                                                        FastJoinMode: joinWithoutCloseCheckbox.checked,
+                                                        placeId: foundPlaceStr,
+                                                        serverId: info.serverId
+                                                    });
+                                                }
+                                            } else {
+                                                joinBtn.style.display = "none";
+                                                inviteBtn.innerText = "Copy Teleport Code";
+                                                inviteBtn.dataset.teleportCode =
+                                                    `game:GetService("TeleportService"):TeleportToPlaceInstance(${info.placeId}, "${info.serverId}", game.Players.LocalPlayer)`;
+                                                inviteBtn.style.display = "";
+                                            }
+                                            status.innerHTML =
+                                                `⏱️ Time: ${secs}s<br>` +
+                                                `🛰️ Place Name: ${info.placename}<br>` +
+                                                `👤 Players: ${info.players}`;
+                                            searchInProgress = false;
+                                            enableUI();
+                                            resolve(true);
+                                        } else {
+                                            status.innerHTML = msg.msg;
+                                            searchInProgress = false;
+                                            enableUI();
+                                            resolve(false);
+                                        }
+                                        break;
+                                    case "error":
+                                        ws.close();
+                                        status.innerHTML = `❌ ${msg.msg}`;
+                                        searchInProgress = false;
+                                        enableUI();
+                                        resolve(false);
+                                        break;
+                                }
+                            });
+
+                            ws.addEventListener("close", () => {
+                                if (searchInProgress) {
+                                    searchInProgress = false;
+                                    enableUI();
+                                    resolve(false);
+                                }
+                            });
+
+                            ws.addEventListener("error", (err) => {
+                                console.warn("Sniper WS error", err);
+                                if (searchInProgress) {
+                                    searchInProgress = false;
+                                    enableUI();
+                                    resolve(false);
+                                }
+                            });
+                        });
+                    } catch (e) {
+                        status.innerHTML = `❌ ${e.message || "Connection Error"}`;
+                        searchInProgress = false;
+                        enableUI();
+                        return false;
+                    }
+                }
+
+                searchBtn.addEventListener("click", async (e) => {
+                    e.preventDefault();
+                    (async function loopSearch(start = Date.now()) {
+                        const found = await wsDoSearch(false);
+                        if (!found && autoCheckbox.checked) {
+                            const elapsed = Date.now() - start;
+                            if (elapsed >= 300000) {
+                                status.innerHTML = "⏰ 5 Minutes Passed. Stopping Loop";
+                                autoCheckbox.checked = false;
+                            } else {
+                                status.innerHTML = "Not Found, Reconnecting Ws...";
+                                await new Promise(r => setTimeout(r, 250));
+                                return loopSearch(start);
+                            }
+                        }
+                    })();
+                });
+
+                searchJoinBtn.addEventListener("click", async (e) => {
+                    e.preventDefault();
+                    (async function loopSearchJoin(start = Date.now()) {
+                        const found = await wsDoSearch(true);
+                        if (!found && autoCheckbox.checked) {
+                            const elapsed = Date.now() - start;
+                            if (elapsed >= 300000) {
+                                status.innerHTML = "⏰ 5 Minutes Passed. Stopping Loop";
+                                autoCheckbox.checked = false;
+                            } else {
+                                status.innerHTML = "Not Found, Reconnecting Ws...";
+                                await new Promise(r => setTimeout(r, 250));
+                                return loopSearchJoin(start);
+                            }
+                        }
+                    })();
+                });
+
+                joinBtn.addEventListener('click', () => {
+                    const profileUrl = joinBtn.dataset.profileUrl;
+                    const sid = joinBtn.dataset.server;
+                    const pid = joinBtn.dataset.placeid;
+                    if (profileUrl) {
+                        window.open(profileUrl, '_blank');
+                        return;
+                    }
+                    if (pid === MAIN_PLACE_ID && sid) {
+                        chrome.runtime.sendMessage({ FastJoinMode: joinWithoutCloseCheckbox.checked, type: 'join', placeId: pid, serverId: sid });
+                    }
+                });
+
+                inviteBtn.addEventListener('click', () => {
+                    const codeOrUrl = inviteBtn.dataset.teleportCode;
+                    if (!codeOrUrl) return;
+                    if (navigator.clipboard) {
+                        navigator.clipboard.writeText(codeOrUrl).then(() => {
+                            inviteBtn.innerText = 'Copied!';
+                            setTimeout(() => {
+                                if (inviteBtn.dataset.teleportCode && inviteBtn.dataset.teleportCode.startsWith('game:GetService')) {
+                                    inviteBtn.innerText = 'Copy Teleport Code';
+                                } else {
+                                    inviteBtn.innerText = 'Invite';
+                                }
+                            }, 2000);
+                        });
+                    } else {
+                        alert(codeOrUrl);
+                    }
+                });
+
+                specialBtn.addEventListener('click', () => {
+                    const code = specialBtn.dataset.teleportCode;
+                    if (!code) return;
+                    if (navigator.clipboard) {
+                        navigator.clipboard.writeText(code).then(() => {
+                            specialBtn.innerText = 'Copied!';
+                            setTimeout(() => (specialBtn.innerText = 'Copy Teleport Code'), 2000);
+                        });
+                    } else {
+                        alert(code);
+                    }
+                });
+
+                function addHeaderToggleToServerList() {
+                    try {
+                        const strayCheckbox = document.getElementById("phantom-live-checkbox");
+                        if (strayCheckbox && strayCheckbox.parentNode) {
+                            strayCheckbox.parentNode.removeChild(strayCheckbox);
+                        }
+                        const strayWrapper = document.getElementById("phantom-live-checkbox-header");
+                        if (strayWrapper && strayWrapper.parentNode) {
+                            strayWrapper.parentNode.removeChild(strayWrapper);
+                        }
+                    } catch (e) {
+                        // ignore
+                    }
+                    return;
+                }
+
+                function createLiveEntryElement(info, uniqueId) {
+                    const foundPlaceStr = String(info.placeId);
+                    const isFastMode = info.placename.includes("Fast Mode");
+                    const isMain = (foundPlaceStr === MAIN_PLACE_ID);
+                    const players = info.players || "?";
+                    const fps = info.fps || "?";
+                    const ping = info.ping || "?";
+                    const robux = info.Robux || info.robux || "?";
+                    const profileid = info.Userid || info.userid || "?";
+                    const donator = info.Donator || info.donator || "?";
+                    const receiver = info.Receiver || info.receiver || "?";
+                    const donatorImg = info.Donatorimg || info.donatorimg || "";
+                    const receiverImg = info.Receiverimg || info.receiverimg || "";
+                    const rawName = info.placename || "";
+                    const BASE = "PLS DONATE 💸";
+                    const strid = info.serverId.split('-').slice(0, 2).map(s => s.slice(0, 4)).join('-');
+                    
+                    let placenameLine = "", extraLine = "";
+                    const m = rawName.match(new RegExp(`(${BASE})(.*)$`));
+                    if (m) {
+                        placenameLine = `🛰️ ${m[1]}`;
+                        extraLine = m[2].trim();
+                    } else {
+                        placenameLine = rawName;
+                    }
+
+                    const div = document.createElement("li");
+                    div.className = "rbx-public-game-server-item col-md-3 col-sm-4 col-xs-6";
+                    div.id = uniqueId;
+                    div.style.width = 'calc(25% - 12px)';
+                    div.style.boxSizing = 'border-box';
+
+                    let color = "#008000";
+                    let robuxCleaned = String(robux).replace(/\./g, "");
+                    let robuxAmount = parseFloat(robuxCleaned) || 0;
+                    if (robuxAmount >= 99999) {
+                        color = "#ff69b4";
+                    } else if (robuxAmount >= 9999) {
+                        color = "#1e90ff";
+                    } else if (robuxAmount >= 999) {
+                        color = "#ffd700";
+                    }
+
+                    let contentHTML = `
+                        <style>
+                            .server-info-small {
+                                font-size: 0.80rem !important;
+                                line-height: 1.1em !important;
+                                margin-bottom: 0.3em !important;
+                                color: #333;
+                            }
+                            .extra-placename-text {
+                                font-size: 0.7rem;
+                                color: #aaa;
+                                margin-top: 0.1em;
+                            }
+                        </style>
+                        <div class="card-item card-item-public-server">
+                            <div class="rbx-public-game-server-details game-server-details">
+                                <div class="text-info rbx-game-status rbx-public-game-server-status text-overflow server-info-small">
+                    `;
+
+                    if (isFastMode && !isMain) {
+                        contentHTML += `
+                                    ${placenameLine}<br>
+                                    ${extraLine}<br><br>
+                                    👤 Players: ${players}<br>
+                                    🆔: ${strid}
+                                </div>
+                                <span>
+                                    <button class="btn-full-width btn-control-xs btn-primary-md btn-min-width open-profile-btn"
+                                            data-url="https://www.roblox.com/users/${profileid}/profile?friendshipSourceType=PlayerSearch">
+                                        Open Profile
+                                    </button>
+                                    <button class="btn-full-width btn-control-xs btn-secondary-md btn-min-width copy-btn"
+                                            data-copy="https://www.roblox.com/users/${profileid}/profile?friendshipSourceType=PlayerSearch">
+                                        Invite (Profile)
+                                    </button>
+                                    <button class="btn-full-width btn-control-xs btn-min-width copy-btn"
+                                            data-copy="game:GetService('TeleportService'):TeleportToPlaceInstance(${info.placeId}, '${info.serverId}', game.Players.LocalPlayer)">
+                                        Copy Teleport Code
+                                    </button>
+                                </span>
+                        `;
+                    } else if (isMain) {
+                        contentHTML += `
+                                    ${placenameLine}<br>
+                                    ${extraLine}<br><br>
+                                    👤 Players: ${players}<br>
+                                    🆔: ${strid}
+                                </div>
+                                <span>
+                                    <button class="btn-full-width btn-control-xs btn-primary-md btn-min-width join-server-btn"
+                                            data-place-id="${info.placeId}"
+                                            data-server-id="${info.serverId}">
+                                        Join
+                                    </button>
+                                    <button class="btn-full-width btn-control-xs btn-secondary-md btn-min-width copy-btn"
+                                            data-copy="https://fern.wtf/joiner?placeId=${info.placeId}&gameInstanceId=${info.serverId}">
+                                        Invite
+                                    </button>
+                                </span>
+                        `;
+                    } else if (!isFastMode && !isMain) {
+                        contentHTML += `
+                                    Executor Only.<br>
+                                    ${placenameLine}<br>
+                                    ${extraLine}<br><br>
+                                    👤 Players: ${players}<br>
+                                    🆔: ${strid}
+                                </div>
+                                <span>
+                                    <button class="btn-full-width btn-control-xs btn-min-width copy-btn"
+                                           data-copy="game:GetService('TeleportService'):TeleportToPlaceInstance(${info.placeId}, '${info.serverId}', game.Players.LocalPlayer)">
+                                        Copy Teleport Code
+                                    </button>
+                                </span>
+                        `;
+                    }
+
+                    contentHTML += `
+                                <div class="avatar-thumbnails" style="display: flex; align-items: center; gap: 5px; margin-top: 5px;">
+                                    <img src="${donatorImg}" style="border-radius: 25%; width: 60px; height: 60px;" title="Donator" onerror="this.style.display='none'">
+                                    <span style="font-weight: bold; color: ${color}; font-size: 28px; position: relative; top: 10px;">➔</span>
+                                    <img src="${receiverImg}" style="border-radius: 25%; width: 60px; height: 60px;" title="Receiver" onerror="this.style.display='none'">
+                                </div>
+                                <div class="server-id-text text-info xsmall donator-info-large" style="font-size: 0.75rem; color: ${color} !important;">
+                                    ${donator} -> ${receiver} ${robux}⏣
+                                </div>
+                            </div>
+                        </div>
+                    `;
+
+                    div.innerHTML = contentHTML;
+                    div.style.height = '268px';
+                    const cardItem = div.querySelector(".card-item.card-item-public-server");
+                    if (cardItem) {
+                        cardItem.style.height = '250px';
+                    }
+
+                    div.querySelectorAll('.open-profile-btn').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            const url = btn.dataset.url;
+                            if (url) window.open(url, '_blank');
+                        });
+                    });
+
+                    div.querySelectorAll('.copy-btn').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            const text = btn.dataset.copy;
+                            if (!text) return;
+                            if (navigator.clipboard) {
+                                navigator.clipboard.writeText(text).then(() => {
+                                    const oldText = btn.innerText;
+                                    btn.innerText = 'Copied!';
+                                    setTimeout(() => {
+                                        btn.innerText = oldText;
+                                    }, 2000);
+                                }).catch(() => {
+                                    alert("Failed to copy.");
+                                });
+                            } else {
+                                alert(text);
+                            }
+                        });
+                    });
+
+                    div.querySelectorAll('.join-server-btn').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            const placeId = btn.dataset.placeId;
+                            const serverId = btn.dataset.serverId;
+                            chrome.runtime.sendMessage({
+                                FastJoinMode: (typeof joinWithoutCloseCheckbox !== 'undefined' && joinWithoutCloseCheckbox.checked) || false,
+                                type: 'join',
+                                placeId,
+                                serverId
+                            });
+                        });
+                    });
+
+                    return div;
+                }
+
+                async function renderResultToLivePanel(info, uniqueId) {
+                    const liveList = document.getElementById('phantom-live-list');
+                    if (!liveList) return;
+                    if (!info || !uniqueId) return;
+                    if (seen.has(uniqueId)) return;
+                    seen.add(uniqueId);
+                    const el = createLiveEntryElement(info, uniqueId);
+                    liveList.appendChild(el);
+                }
+                
+                let liveWS = null;
+                let liveWSKey = null;
+                let livePingInterval = null;
+                let statusPollInterval = null;
+
+                function disconnectLiveWS() {
+                    if (liveWS) {
+                        try { liveWS.close(); } catch {}
+                        liveWS = null;
+                    }
+
+                    liveWSKey = null;
+
+                    if (livePingInterval) {
+                        clearInterval(livePingInterval);
+                        livePingInterval = null;
+                    }
+
+                    if (statusPollInterval) {
+                        clearInterval(statusPollInterval);
+                        statusPollInterval = null;
+                    }
+                }
+
+                function connectLiveWS() {
+                    const currentKey = window.__Primary?.key ?? null;
+
+                    if (liveWS && liveWSKey !== currentKey) {
+                        disconnectLiveWS();
+                    }
+
+                    if (liveWS && liveWS.readyState === WebSocket.OPEN) return;
+
+                    if (!currentKey) {
+                        const waitForKey = setInterval(() => {
+                            const newKey = window.__Primary?.key ?? null;
+                            if (newKey) {
+                                clearInterval(waitForKey);
+                                connectLiveWS();
+                            }
+                        }, 50);
+                        return;
+                    }
+
+                    liveWSKey = currentKey;
+                    liveWS = new WebSocket(
+                        `wss://phantomscope.onrender.com/livechannel?authkey=${encodeURIComponent(currentKey)}`
+                    );
+
+                    liveWS.addEventListener("open", () => {
+                        renderStatusToElement({ level: 'green', message: 'Live WS Connected' });
+
+                        livePingInterval = setInterval(() => {
+                            if (liveWS?.readyState === WebSocket.OPEN) {
+                                liveWS.send("Alive");
+                            }
+                        }, 1000);
+
+                        if (!statusPollInterval) {
+                            statusPollInterval = setInterval(async () => {
+                                const st = await checkLiveStatus();
+                                renderStatusToElement(st);
+                            }, 5000);
+                        }
+                    });
+
+                    liveWS.addEventListener("message", async (ev) => {
+                        let data;
+                        try {
+                            data = JSON.parse(ev.data);
+                        } catch {
+                            return;
+                        }
+
+                        if (!data || typeof data !== "object") return;
+
+                        const currentIds = new Set(Object.keys(data));
+
+                        for (const id of Array.from(seen)) {
+                            if (!currentIds.has(id)) {
+                                document.getElementById(id)?.remove();
+                                seen.delete(id);
+                            }
+                        }
+
+                        for (const [id, info] of Object.entries(data)) {
+                            if (!seen.has(id) && info) {
+                                await renderResultToLivePanel(info, id);
+                            }
+                        }
+                    });
+
+                    liveWS.addEventListener("close", () => {
+                        renderStatusToElement({ level: 'red', message: '❌ Live Connection Closed' });
+                        disconnectLiveWS();
+
+                        setTimeout(() => {
+                            const panelToggle = document.getElementById('phantom-live-toggle');
+                            if (panelToggle?.checked) connectLiveWS();
+                        }, 2500);
+                    });
+                }
+
+                fetchExpiryAndStartCountdown();
+
+                (async function initialStatus() {
+                    const st = await checkLiveStatus();
+                    renderStatusToElement(st);
+                    setInterval(async () => {
+                        const s2 = await checkLiveStatus();
+                        renderStatusToElement(s2);
+                    }, 5000);
+                })();
+
+            })();
+        }
+    });
+
+})();
