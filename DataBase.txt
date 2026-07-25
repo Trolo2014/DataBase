@@ -1,1 +1,1 @@
-2.5.1|https://cdn.discordapp.com/attachments/1371603463762608198/1526687536506732618/PhantomScope_Ver._2.5.1.zip?ex=6a57ee11&is=6a569c91&hm=cdae7a8a46130f4a4de317dcf6c292b309f13cf44b1bdff54b75720deee54dd2&
+2.5.2|https://cdn.discordapp.com/attachments/1371603463762608198/1530608455704903760/PhantomScope_Ver._2.5.2.zip?ex=6a6631b5&is=6a64e035&hm=6703507e14c4e20e6458be8e3e0b38f7bdf6cfefecbf59c3f5fcd972947699e2&
